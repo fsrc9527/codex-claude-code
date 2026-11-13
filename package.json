@@ -1,0 +1,29 @@
+{
+  "name": "codex-claude-code",
+  "version": "1.0.0",
+  "description": "Install Claude Code as a visible, stoppable Codex subagent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fsrc9527/codex-claude-code.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "codex-claude-code": "./install.mjs"
+  },
+  "files": [
+    "install.mjs",
+    "launch.mjs",
+    "runtime/package.json",
+    "runtime/npm-shrinkwrap.json",
+    "runtime/claude-cli.mjs",
+    "runtime/provider.mjs",
+    "runtime/runs.mjs",
+    "runtime/server.mjs",
+    "runtime/turns.mjs",
+    "codex/agents/claude_code.toml",
+    "codex/skills/claude-code-delegate/SKILL.md"
+  ]
+}
