@@ -44,6 +44,12 @@ function gatewayToken() {
   throw new Error("CC Switch Desktop gateway authentication is unavailable. Reapply the Desktop provider in CC Switch.");
 }
 
+export function desktopModelIds(profile = desktopProfile()) {
+  return [...new Set((Array.isArray(profile.inferenceModels) ? profile.inferenceModels : [])
+    .map(entry => typeof entry === "string" ? entry : entry?.name)
+    .filter(name => typeof name === "string" && name))];
+}
+
 export function providerOptions(provider, model) {
   const env = { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "codex-claude-code" };
   if (provider !== "cc-switch-desktop") return { env, model, settingSources: ["user"] };
@@ -56,9 +62,7 @@ export function providerOptions(provider, model) {
       endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
     throw new Error("CC Switch Desktop mode needs its local Model Mapping gateway.");
   }
-  const models = (Array.isArray(profile.inferenceModels) ? profile.inferenceModels : [])
-    .map(entry => typeof entry === "string" ? entry : entry?.name)
-    .filter(name => typeof name === "string");
+  const models = desktopModelIds(profile);
   const selectedModel = model ?? models.find(name => /^(anthropic\/)?claude-haiku-/.test(name)) ?? models[0];
   if (!selectedModel) throw new Error("No model is configured on the CC Switch Desktop gateway.");
 

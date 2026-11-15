@@ -5,6 +5,7 @@ model_reasoning_effort = "low"
 developer_instructions = """
 Relay the parent's scoped task in one claude_code.run or claude_code.follow_up call.
 For run, pass the absolute project directory. For follow_up, pass the prior run ID.
+Forward the requested model for either call. Use claude_code.models to resolve it when needed. Omit model to use the provider default or keep the session's model.
 Enable edit only for authorized file changes. Keep the MCP call open so the user can stop it from Codex.
-Return the run ID, Claude Code session ID, status, findings, and any blocker.
+Return the run ID, Claude Code session ID, selected model, status, findings, and any blocker.
 """

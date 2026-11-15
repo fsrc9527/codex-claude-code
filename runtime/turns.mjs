@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { findClaudeCli } from "./claude-cli.mjs";
-import { providerOptions } from "./provider.mjs";
+import { desktopModelIds, providerOptions } from "./provider.mjs";
 import { summarizeRun } from "./runs.mjs";
 
 const readTools = ["Read", "Grep", "Glob"];
@@ -86,20 +86,60 @@ function isAuthError(event) {
 export function createTurns(runs, cliPath, provider) {
   const active = new Map();
 
-  async function execute({ cwd, task, model, edit, timeout_seconds }, extra, resume) {
-    if (extra.signal.aborted) return { status: "cancelled" };
-    if (!isAbsolute(cwd)) throw new Error("Pass an absolute working directory.");
-    cwd = realpathSync(cwd);
-    if (!statSync(cwd).isDirectory()) throw new Error("The working directory must be a directory.");
+  function requireCli() {
     const claudePath = findClaudeCli(cliPath);
     if (!claudePath) {
       throw new Error("Install Claude Code and configure its provider. See https://code.claude.com/docs/en/setup.");
     }
+    return claudePath;
+  }
 
-    const connection = providerOptions(provider, model);
+  function workingDirectory(cwd) {
+    if (!isAbsolute(cwd)) throw new Error("Pass an absolute working directory.");
+    const directory = realpathSync(cwd);
+    if (!statSync(directory).isDirectory()) throw new Error("The working directory must be a directory.");
+    return directory;
+  }
+
+  async function models(cwd, signal) {
+    signal.throwIfAborted();
+    const directory = workingDirectory(cwd);
+    if (provider === "cc-switch-desktop") return desktopModelIds();
+    const abortController = new AbortController();
+    const abort = () => abortController.abort(signal.reason);
+    const input = Promise.withResolvers();
+    signal.addEventListener("abort", abort, { once: true });
+    let execution;
+    try {
+      execution = query({
+        prompt: (async function* () { await input.promise; })(),
+        options: {
+          pathToClaudeCodeExecutable: requireCli(), abortController, cwd: directory,
+          ...providerOptions(provider),
+          persistSession: false,
+          strictMcpConfig: true,
+          permissionMode: "dontAsk",
+          tools: [],
+          extraArgs: { "safe-mode": null },
+        },
+      });
+      const available = await execution.supportedModels();
+      return [...new Set(available.map(model => model.value).filter(Boolean))];
+    } finally {
+      signal.removeEventListener("abort", abort);
+      input.resolve();
+      execution?.close();
+    }
+  }
+
+  async function execute({ cwd, task, model, edit, timeout_seconds }, extra, prior) {
+    if (extra.signal.aborted) return { status: "cancelled" };
+    cwd = workingDirectory(cwd);
+    const claudePath = requireCli();
     const id = randomUUID();
+    const resume = prior?.session_id;
     const sessionId = resume ?? randomUUID();
-    runs.begin({ id, cwd, sessionId, model: connection.model });
+    runs.begin({ id, cwd, sessionId, model });
     const steps = new Map();
     const tools = edit ? editTools : readTools;
     const progress = reportProgress(extra, id);
@@ -127,6 +167,9 @@ export function createTurns(runs, cliPath, provider) {
 
     const cancel = () => stop("cancelled");
     try {
+      const modelOverride = model ?? (prior ? runs.latestModel(resume) ?? prior.model ?? undefined : undefined);
+      const connection = providerOptions(provider, modelOverride);
+      if (connection.model && !model) runs.saveModel(id, connection.model);
       execution = query({
         prompt: (async function* () {
           yield {
@@ -235,6 +278,7 @@ export function createTurns(runs, cliPath, provider) {
 
   return {
     execute,
+    models,
     cancel,
     stopAll() {
       for (const stop of active.values()) stop();

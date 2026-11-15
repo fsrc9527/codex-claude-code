@@ -34,6 +34,11 @@ export function openRuns(path) {
   `);
   const read = db.prepare(`SELECT ${runColumns} FROM runs WHERE run_id = ?`);
   const readDetails = db.prepare(`SELECT ${runColumns}, steps, answer FROM runs WHERE run_id = ?`);
+  const latestModel = db.prepare(`
+    SELECT model FROM runs
+    WHERE session_id = ? AND status = 'succeeded' AND model <> ''
+    ORDER BY rowid DESC LIMIT 1
+  `);
   const recent = db.prepare(`
     SELECT ${runColumns} FROM runs
     ORDER BY (status = 'running') DESC, started_at DESC, run_id
@@ -61,6 +66,7 @@ export function openRuns(path) {
     },
     get: id => read.get(id),
     getDetails: id => readDetails.get(id),
+    latestModel: sessionId => latestModel.get(sessionId)?.model,
     recent: (limit, offset) => recent.all(limit, offset),
     saveModel: (id, model) => saveModel.run(model, id),
     saveSteps: (id, steps) => saveSteps.run(JSON.stringify(steps), id),

@@ -8,6 +8,8 @@ import { createTurns, errorMessage } from "./turns.mjs";
 const runId = z.uuid().describe("Run ID from run, follow_up, or trace");
 const turnOptions = {
   task: z.string().trim().min(1).describe("One scoped task or follow-up for Claude Code"),
+  model: z.string().trim().min(1).optional()
+    .describe("Model on the configured provider. Omit to use the provider default or keep the session's model."),
   edit: z.boolean().default(false).describe("Allow workspace file edits when authorized"),
   timeout_seconds: z.number().int().min(1).max(600).default(180),
 };
@@ -26,7 +28,7 @@ if (!databasePath) throw new Error("Start the MCP server with the installed laun
 const runs = openRuns(databasePath);
 const turns = createTurns(runs, process.env.CLAUDE_CODE_MCP_CLI_HINT, process.env.CLAUDE_CODE_MCP_PROVIDER);
 const server = new McpServer({ name: "claude_code", version: packageInfo.version }, {
-  instructions: "Delegate run and follow_up to the native claude_code subagent to keep each turn visible and stoppable. Use trace for run history and tool outcomes. Use cancel to stop a turn by ID. Enable edit only when authorized.",
+  instructions: "Delegate run and follow_up to the native claude_code subagent to keep each turn visible and stoppable. Use models for provider models, trace for run history, and cancel to stop a turn by ID. Enable edit only when authorized.",
 });
 
 function register(name, options, handler) {
@@ -40,17 +42,25 @@ function register(name, options, handler) {
   });
 }
 
-async function run(options, extra, resume) {
-  const result = await turns.execute(options, extra, resume);
+async function run(options, extra, prior) {
+  const result = await turns.execute(options, extra, prior);
   return reply(result, result.status !== "succeeded");
 }
+
+register("models", {
+  title: "List Claude Code models",
+  description: "List models from the configured Claude Code provider without sending a model prompt.",
+  inputSchema: { cwd: z.string().trim().min(1).describe("Absolute directory of the selected project") },
+  annotations: { readOnlyHint: true, openWorldHint: true },
+}, async ({ cwd }, extra) => reply({
+  models: await turns.models(cwd, AbortSignal.any([extra.signal, AbortSignal.timeout(30000)])),
+}));
 
 register("run", {
   title: "Run a Claude Code task",
   description: "Send a task to Claude Code and save its session for follow-up. The call stays open until the task stops.",
   inputSchema: {
     cwd: z.string().trim().min(1).describe("Absolute directory of the selected project"),
-    model: z.string().trim().min(1).optional().describe("Explicit model on the configured provider. Omit to use the bridge's provider default."),
     ...turnOptions,
   },
   annotations: turnAnnotations,
@@ -58,13 +68,13 @@ register("run", {
 
 register("follow_up", {
   title: "Continue a Claude Code session",
-  description: "Continue the Claude Code session and model of a prior run with a new instruction.",
+  description: "Continue the same Claude Code session with its saved model or an explicit model switch.",
   inputSchema: { run_id: runId, ...turnOptions },
   annotations: turnAnnotations,
 }, ({ run_id, ...options }, extra) => {
   const prior = runs.get(run_id);
   if (!prior) throw new Error("Claude Code run was not found.");
-  return run({ ...options, cwd: prior.cwd, model: prior.model ?? undefined }, extra, prior.session_id);
+  return run({ ...options, cwd: prior.cwd }, extra, prior);
 });
 
 register("trace", {

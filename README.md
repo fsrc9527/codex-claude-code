@@ -12,7 +12,9 @@ npx --yes --package=git+https://github.com/fsrc9527/codex-claude-code.git codex-
 
 > `$claude-code-delegate` 让 Claude Code 只读定位登录入口，返回文件路径和行号。
 
-默认使用 Claude Code CLI 的用户配置，续问沿用原会话和模型。Anthropic 官方 Claude 模型理论上可用，尚未实测。
+派任务和续问都可用 `model` 指定当前供应商支持的模型。`claude_code.models` 可查询候选模型。Anthropic 官方 Claude 模型理论上可用，尚未实测。
+
+新任务省略模型时使用已配置的默认值。续问省略模型时优先沿用同一会话最近一次成功运行的模型，否则沿用所续接的那一轮。运行记录会显示模型选择。
 
 任务默认只读。授权后可用 Edit 和 Write 修改文件。子任务在 Claude Code 安全模式运行，保留供应商配置并关闭项目 hooks、插件和 MCP。安装器将本地 `claude_code` MCP 设为自动批准。
 
