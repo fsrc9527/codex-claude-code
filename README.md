@@ -21,3 +21,15 @@ npx --yes --package=git+https://github.com/fsrc9527/codex-claude-code.git codex-
 任务默认只读。授权后可用 Edit 和 Write 修改文件。子任务在 Claude Code 安全模式运行，保留供应商配置并关闭项目 hooks、插件和 MCP。安装器将本地 `claude_code` MCP 设为自动批准。
 
 派任务和追问使用当前模型供应商的额度。执行记录保存在 Codex 用户目录的 `claude-code/runs.sqlite`。重复执行安装命令可以更新。
+
+## 按需委派
+
+安装后，把下面这段追加到目标项目根目录的 `AGENTS.md`，或追加到 `~/.codex/AGENTS.md` 作为个人默认。安装了多个桥接时，可在同一节列出各自的角色名。 [Codex 的 AGENTS.md 文档](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+
+```md
+## 外部子智能体
+
+- `claude_code`（Claude Code）子智能体及其 MCP 可用时，将它纳入分工考虑。
+- 对可独立完成的排查、复核或实现，结合耗时、额度消耗和结果质量判断是否值得委派。适合委派时，主动选用合适的子智能体角色。简单任务由主智能体直接处理。
+- 派发时说明目标、工作范围和预期产出。需要追问时继续原会话，主智能体核实结果并负责交付。
+```
