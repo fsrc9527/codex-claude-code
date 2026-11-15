@@ -50,6 +50,31 @@ export function desktopModelIds(profile = desktopProfile()) {
     .filter(name => typeof name === "string" && name))];
 }
 
+export function providerEfforts(provider, model, advertised) {
+  if (provider !== "cc-switch-desktop" || !advertised.length) return advertised;
+  try {
+    const database = new DatabaseSync(join(homedir(), ".cc-switch", "cc-switch.db"), { readOnly: true });
+    try {
+      const row = database.prepare("SELECT settings_config, meta FROM providers WHERE app_type = 'claude-desktop' AND is_current = 1").get();
+      const settings = JSON.parse(row?.settings_config ?? "{}");
+      const meta = JSON.parse(row?.meta ?? "{}");
+      const endpoint = URL.parse(settings.env?.ANTHROPIC_BASE_URL ?? "");
+      const route = model.replace(/\s*\[1m\]$/i, "");
+      const upstreamModel = meta.claudeDesktopModelRoutes?.[route]?.model;
+      if (meta.apiFormat === "anthropic" && endpoint?.hostname === "api.deepseek.com" &&
+          /^deepseek-(?:flash|v4-flash|v4-pro)$/.test(upstreamModel ?? "")) {
+        // The official DeepSeek route maps medium and xhigh to high.
+        return advertised.filter(level => ["low", "high", "max"].includes(level));
+      }
+    } finally {
+      database.close();
+    }
+  } catch {
+    // Other or older gateways can still use the Claude Code catalog.
+  }
+  return advertised;
+}
+
 export function providerOptions(provider, model) {
   const env = { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "codex-claude-code" };
   if (provider !== "cc-switch-desktop") return { env, model, settingSources: ["user"] };

@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const runColumns = `
   run_id, session_id, cwd, model, status, started_at, finished_at,
-  cancel_requested, error
+  cancel_requested, error, effort
 `;
 
 export function summarizeRun({ cancel_requested, error, ...run }) {
@@ -22,10 +22,22 @@ export function openRuns(path) {
       run_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, model TEXT,
       session_id TEXT NOT NULL, status TEXT NOT NULL, owner_pid INTEGER NOT NULL,
       started_at TEXT NOT NULL, finished_at TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
-      answer TEXT, error TEXT, steps TEXT NOT NULL DEFAULT '[]'
+      answer TEXT, error TEXT, steps TEXT NOT NULL DEFAULT '[]', effort TEXT
     );
     CREATE UNIQUE INDEX IF NOT EXISTS one_turn_per_session ON runs(session_id) WHERE status = 'running';
   `);
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM pragma_table_info('runs') WHERE name = 'effort'").get()) {
+      db.exec("ALTER TABLE runs ADD COLUMN effort TEXT");
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    db.close();
+    throw error;
+  }
 
   const insert = db.prepare(`
     INSERT INTO runs (run_id, cwd, session_id, model, status, owner_pid, started_at)
@@ -34,8 +46,8 @@ export function openRuns(path) {
   `);
   const read = db.prepare(`SELECT ${runColumns} FROM runs WHERE run_id = ?`);
   const readDetails = db.prepare(`SELECT ${runColumns}, steps, answer FROM runs WHERE run_id = ?`);
-  const latestModel = db.prepare(`
-    SELECT model FROM runs
+  const latestSelection = db.prepare(`
+    SELECT model, effort FROM runs
     WHERE session_id = ? AND status = 'succeeded' AND model <> ''
     ORDER BY rowid DESC LIMIT 1
   `);
@@ -46,6 +58,7 @@ export function openRuns(path) {
   `);
   const runningOwners = db.prepare("SELECT run_id, owner_pid FROM runs WHERE status = 'running'");
   const saveModel = db.prepare("UPDATE runs SET model = ? WHERE run_id = ?");
+  const saveEffort = db.prepare("UPDATE runs SET effort = ? WHERE run_id = ?");
   const saveSteps = db.prepare("UPDATE runs SET steps = ? WHERE run_id = ?");
   const readCancel = db.prepare("SELECT cancel_requested FROM runs WHERE run_id = ?");
   const markCancel = db.prepare(`
@@ -66,9 +79,10 @@ export function openRuns(path) {
     },
     get: id => read.get(id),
     getDetails: id => readDetails.get(id),
-    latestModel: sessionId => latestModel.get(sessionId)?.model,
+    latestSelection: sessionId => latestSelection.get(sessionId),
     recent: (limit, offset) => recent.all(limit, offset),
     saveModel: (id, model) => saveModel.run(model, id),
+    saveEffort: (id, effort) => saveEffort.run(effort, id),
     saveSteps: (id, steps) => saveSteps.run(JSON.stringify(steps), id),
     cancelRequested: id => readCancel.get(id)?.cancel_requested === 1,
     requestCancel: id => markCancel.run(id),

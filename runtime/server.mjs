@@ -10,6 +10,8 @@ const turnOptions = {
   task: z.string().trim().min(1).describe("One scoped task or follow-up for Claude Code"),
   model: z.string().trim().min(1).optional()
     .describe("Model on the configured provider. Omit to use the provider default or keep the session's model."),
+  effort: z.string().trim().min(1).max(80).optional()
+    .describe("Reasoning effort offered by the selected Claude Code model. Omit to keep the session choice when supported."),
   edit: z.boolean().default(false).describe("Allow workspace file edits when authorized"),
   timeout_seconds: z.number().int().min(1).max(600).default(180),
 };
@@ -49,12 +51,15 @@ async function run(options, extra, prior) {
 
 register("models", {
   title: "List Claude Code models",
-  description: "List models from the configured Claude Code provider without sending a model prompt.",
-  inputSchema: { cwd: z.string().trim().min(1).describe("Absolute directory of the selected project") },
+  description: "List the configured Claude Code models. Pass model to include its reasoning effort choices without a model prompt.",
+  inputSchema: {
+    cwd: z.string().trim().min(1).describe("Absolute directory of the selected project"),
+    model: turnOptions.model,
+  },
   annotations: { readOnlyHint: true, openWorldHint: true },
-}, async ({ cwd }, extra) => reply({
-  models: await turns.models(cwd, AbortSignal.any([extra.signal, AbortSignal.timeout(30000)])),
-}));
+}, async ({ cwd, model }, extra) => reply(
+  await turns.models(cwd, AbortSignal.any([extra.signal, AbortSignal.timeout(30000)]), model),
+));
 
 register("run", {
   title: "Run a Claude Code task",

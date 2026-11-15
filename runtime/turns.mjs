@@ -4,7 +4,7 @@ import { isAbsolute, relative, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { findClaudeCli } from "./claude-cli.mjs";
-import { desktopModelIds, providerOptions } from "./provider.mjs";
+import { desktopModelIds, providerEfforts, providerOptions } from "./provider.mjs";
 import { summarizeRun } from "./runs.mjs";
 
 const readTools = ["Read", "Grep", "Glob"];
@@ -83,6 +83,14 @@ function isAuthError(event) {
     (event.type === "system" && event.subtype === "api_retry" && [401, 403].includes(event.error_status));
 }
 
+function effortOptions(models, model, provider) {
+  const selector = model.replace(/\s*\[1m\]$/i, "");
+  const match = models.find(entry => entry.value === model)
+    ?? models.find(entry => entry.resolvedModel === model)
+    ?? models.find(entry => entry.value === selector || entry.resolvedModel?.replace(/\s*\[1m\]$/i, "") === selector);
+  return providerEfforts(provider, match?.resolvedModel ?? model, match?.supportedEffortLevels ?? []);
+}
+
 export function createTurns(runs, cliPath, provider) {
   const active = new Map();
 
@@ -101,10 +109,8 @@ export function createTurns(runs, cliPath, provider) {
     return directory;
   }
 
-  async function models(cwd, signal) {
+  async function supportedModels(cwd, signal, connection) {
     signal.throwIfAborted();
-    const directory = workingDirectory(cwd);
-    if (provider === "cc-switch-desktop") return desktopModelIds();
     const abortController = new AbortController();
     const abort = () => abortController.abort(signal.reason);
     const input = Promise.withResolvers();
@@ -114,8 +120,11 @@ export function createTurns(runs, cliPath, provider) {
       execution = query({
         prompt: (async function* () { await input.promise; })(),
         options: {
-          pathToClaudeCodeExecutable: requireCli(), abortController, cwd: directory,
-          ...providerOptions(provider),
+          pathToClaudeCodeExecutable: requireCli(), abortController, cwd,
+          ...connection,
+          env: connection.model
+            ? { ...connection.env, ANTHROPIC_CUSTOM_MODEL_OPTION: connection.model }
+            : connection.env,
           persistSession: false,
           strictMcpConfig: true,
           permissionMode: "dontAsk",
@@ -123,8 +132,7 @@ export function createTurns(runs, cliPath, provider) {
           extraArgs: { "safe-mode": null },
         },
       });
-      const available = await execution.supportedModels();
-      return [...new Set(available.map(model => model.value).filter(Boolean))];
+      return await execution.supportedModels();
     } finally {
       signal.removeEventListener("abort", abort);
       input.resolve();
@@ -132,7 +140,19 @@ export function createTurns(runs, cliPath, provider) {
     }
   }
 
-  async function execute({ cwd, task, model, edit, timeout_seconds }, extra, prior) {
+  async function models(cwd, signal, model) {
+    cwd = workingDirectory(cwd);
+    const desktop = provider === "cc-switch-desktop";
+    const aliases = desktop ? desktopModelIds() : undefined;
+    if (desktop && model === undefined) return { models: aliases };
+    const available = await supportedModels(cwd, signal, providerOptions(provider, model));
+    return {
+      models: aliases ?? [...new Set(available.map(entry => entry.value).filter(Boolean))],
+      ...(model === undefined ? {} : { model, efforts: effortOptions(available, model, provider) }),
+    };
+  }
+
+  async function execute({ cwd, task, model, effort, edit, timeout_seconds }, extra, prior) {
     if (extra.signal.aborted) return { status: "cancelled" };
     cwd = workingDirectory(cwd);
     const claudePath = requireCli();
@@ -156,8 +176,10 @@ export function createTurns(runs, cliPath, provider) {
     function stop(status, error) {
       if (stopped || result) return;
       stopped = { status, error };
-      forceStop = setTimeout(() => abortController.abort(), 2200);
-      void execution.interrupt().catch(() => abortController.abort());
+      if (execution) {
+        forceStop = setTimeout(() => abortController.abort(), 2200);
+        void execution.interrupt().catch(() => abortController.abort());
+      } else abortController.abort();
       try {
         runs.requestCancel(id);
       } catch (cause) {
@@ -167,9 +189,40 @@ export function createTurns(runs, cliPath, provider) {
 
     const cancel = () => stop("cancelled");
     try {
-      const modelOverride = model ?? (prior ? runs.latestModel(resume) ?? prior.model ?? undefined : undefined);
+      active.set(id, cancel);
+      extra.signal.addEventListener("abort", cancel, { once: true });
+      if (extra.signal.aborted) cancel();
+      // A cancellation can arrive through a separate Codex MCP process.
+      cancelPoll = setInterval(() => {
+        if (stopped || result) return;
+        try {
+          if (runs.cancelRequested(id)) cancel();
+        } catch (error) {
+          stop("failed", errorMessage(error));
+        }
+      }, 250);
+      deadline = setTimeout(() => stop("timed_out", "Claude Code reached the requested time limit."), timeout_seconds * 1000);
+      const saved = prior ? runs.latestSelection(resume) ?? prior : undefined;
+      const modelOverride = model ?? saved?.model ?? undefined;
       const connection = providerOptions(provider, modelOverride);
+      let selectedEffort = effort ?? saved?.effort ?? undefined;
+      if (selectedEffort !== undefined) {
+        const choices = await supportedModels(cwd, AbortSignal.any([
+          abortController.signal, AbortSignal.timeout(25000),
+        ]), connection);
+        const chosen = connection.model ?? connection.env.ANTHROPIC_MODEL ?? "default";
+        const levels = effortOptions(choices, chosen, provider);
+        if (!levels.includes(selectedEffort)) {
+          if (effort !== undefined) {
+            throw new Error("Claude Code model " + chosen + " does not support effort " + effort +
+              ". Available: " + (levels.join(", ") || "none") + ".");
+          }
+          selectedEffort = undefined;
+        }
+      }
+      abortController.signal.throwIfAborted();
       if (connection.model && !model) runs.saveModel(id, connection.model);
+      if (selectedEffort) runs.saveEffort(id, selectedEffort);
       execution = query({
         prompt: (async function* () {
           yield {
@@ -186,6 +239,7 @@ export function createTurns(runs, cliPath, provider) {
           abortController,
           cwd,
           ...connection,
+          effort: selectedEffort,
           ...(resume ? { resume } : { sessionId }),
           strictMcpConfig: true,
           tools,
@@ -195,18 +249,6 @@ export function createTurns(runs, cliPath, provider) {
           extraArgs: { "safe-mode": null },
         },
       });
-      active.set(id, cancel);
-      extra.signal.addEventListener("abort", cancel, { once: true });
-      // A cancellation can arrive through a separate Codex MCP process.
-      cancelPoll = setInterval(() => {
-        if (stopped || result) return;
-        try {
-          if (runs.cancelRequested(id)) cancel();
-        } catch (error) {
-          stop("failed", errorMessage(error));
-        }
-      }, 250);
-      deadline = setTimeout(() => stop("timed_out", "Claude Code reached the requested time limit."), timeout_seconds * 1000);
       progress("started");
 
       for await (const event of execution) {
